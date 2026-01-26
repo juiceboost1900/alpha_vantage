@@ -1,0 +1,112 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC GOLD - STOCK DAILY GOLD LAYER
+# MAGIC
+# MAGIC Purpose: Retrieve transformed(silver) data -> Manipulate and optimise -> Ready for analysis 
+
+# COMMAND ----------
+
+# Load table from silver layer
+
+df = spark.read.table('market.stocks_daily_silver')
+
+print(df.show(5))
+display(df.limit(10))
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Untitled
+# Adding of daily % change column (Change %)
+
+from pyspark.sql import Window
+from pyspark.sql import functions as F
+
+w = Window.partitionBy('symbol').orderBy('date')
+
+daily_change_pct = (
+    df
+    .withColumn('prev_close', F.lag('close').over(w))
+    .withColumn('pct_change_close', F.round(((F.col('close') - F.col('prev_close')) / F.col('prev_close')) * 100, 2)
+    )
+    .drop('prev_close')
+)
+daily_change_pct.show(20)    # null value valid because data available starts from 2/9/25
+
+display(daily_change_pct.limit(10))
+
+
+# COMMAND ----------
+
+
+from pyspark.sql import functions as F
+
+daily_change = daily_change_pct.withColumn(
+    'pct_change_intraday', 
+    F.round(((F.col('high') - F.col('low')) / F.col('low')) * 100, 2)
+)
+
+display(daily_change.limit(10))
+
+# COMMAND ----------
+
+# Recasting of new columns for change_daily table
+
+from pyspark.sql.functions import col
+from pyspark.sql.types import DecimalType
+
+daily_change =(
+    daily_change
+    .withColumn('pct_change_close', col('pct_change_close').cast(DecimalType(10, 2)))
+    .withColumn('pct_change_intraday', col('pct_change_intraday').cast(DecimalType(10, 2)))
+)
+
+daily_change.printSchema()
+
+# COMMAND ----------
+
+# Build an aggregated monthly table 
+
+gold_daily = daily_change
+
+gold_monthly = (
+    gold_daily
+    .withColumn('year_month', F.date_format('date', 'yyyy-MM'))
+    .groupBy('year_month', 'symbol')
+    .agg(
+         F.first('open').alias('open_month'),
+         F.last('close').alias('close_month'),
+         F.max('high').alias('high_month'),
+         F.min('low').alias('low_month'),
+         F.sum('volume').alias('volume_month')
+    ) 
+)
+
+gold_monthly.printSchema()
+print(gold_monthly.show(5))
+display(gold_monthly.limit(5))
+
+display(gold_daily)
+
+# COMMAND ----------
+
+# Write tables to gold layer
+
+gold_daily.write.mode('overwrite').format('delta').saveAsTable('databricks_alpha.market.stocks_daily_gold')
+
+gold_monthly.write.mode('overwrite').format('delta').saveAsTable('databricks_alpha.market.stocks_monthly_gold')
+
+
+# COMMAND ----------
+
+# Load gold tables 
+gold_daily = spark.read.table('market.stocks_daily_gold')
+
+gold_monthly = spark.read.table('market.stocks_monthly_gold')
+
+print(f'rows: {gold_daily.count()}, columns: {len(gold_daily.columns)}')
+display(gold_daily.limit(5))
+
+print(f'rows: {gold_monthly.count()}, columns: {len(gold_monthly.columns)}')
+display(gold_monthly)
+gold_monthly.printSchema()

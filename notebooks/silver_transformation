@@ -1,0 +1,102 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC SILVER - STOCK DAILY SILVER LAYER 
+# MAGIC
+# MAGIC Purpose: Retrieve bronze data -> Transform -> Write to delta table
+
+# COMMAND ----------
+
+# Load data from bronze table
+
+bronze_df = spark.read.table('databricks_alpha.market.stocks_daily_bronze')
+
+# Check dataframe schema
+bronze_df.printSchema()
+
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col
+from pyspark.sql.types import DecimalType
+
+
+# Recast of datatypes 
+
+silver_df = (
+    bronze_df
+    .withColumn('timestamp', col('timestamp').cast('date'))
+    .withColumn('open', col('open').cast(DecimalType(10, 2)))
+    .withColumn('close', col('close').cast(DecimalType(10, 2)))
+    .withColumn('high', col('high').cast(DecimalType(10, 2)))
+    .withColumn('low', col('low').cast(DecimalType(10, 2)))
+    .withColumn('volume', col('volume').cast('int'))
+)
+                                        
+# Drop duplicates on the same stock AND same timestamp
+silver_df = silver_df.dropDuplicates(['symbol', 'timestamp'])
+
+print(silver_df)
+
+print(silver_df.show(5))
+
+
+# COMMAND ----------
+
+
+# Rename timestamp column to date
+silver_df = silver_df.withColumnRenamed('timestamp', 'date')
+
+print(silver_df.show(5))
+
+
+# COMMAND ----------
+
+# Confirmation of no null values 
+
+from pyspark.sql.functions import col 
+
+for c in silver_df.columns:
+    null_count = silver_df.filter(col(c).isNull()).count()
+    print(f'Column {c} has {null_count} null values')
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 6
+# MAGIC %sql
+# MAGIC     
+# MAGIC -- Enforce no null values ingestion into silver table
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS databricks_alpha.market.stocks_daily_silver(
+# MAGIC   date      DATE NOT NULL,
+# MAGIC   symbol    STRING NOT NULL,
+# MAGIC   open      DECIMAL(10,2) NOT NULL,
+# MAGIC   close     DECIMAL(10,2) NOT NULL,
+# MAGIC   high      DECIMAL(10,2) NOT NULL,
+# MAGIC   low       DECIMAL(10,2) NOT NULL,
+# MAGIC   volume    INT NOT NULL
+# MAGIC )
+# MAGIC USING delta;
+
+# COMMAND ----------
+
+# Write transformed data to Delta table SILVER
+
+silver_df.write.mode("overwrite").format("delta").saveAsTable("databricks_alpha.market.stocks_daily_silver")
+
+# COMMAND ----------
+
+# Load the table
+silver_df = spark.table("databricks_alpha.market.stocks_daily_silver")
+
+# Print schema to confirm NOT NULL constraints
+silver_df.printSchema()
+
+# Check on number of rows and columns
+print(f'Rows: {silver_df.count()}, Columns: {len(silver_df.columns)}')
+
+# check table populating correctly after writing 
+display(silver_df.limit(5))
+
+# COMMAND ----------
+
